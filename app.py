@@ -133,10 +133,10 @@ def analyze_part_image(pil_img, api_key: str) -> dict:
     )
 
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=[pil_img, prompt],
-        config=types.GenerateContentConfig(response_mime_type="application/json")
-    )
+    model='gemini-1.5-flash',
+    contents=[pil_img, prompt],
+    config=types.GenerateContentConfig(response_mime_type="application/json")
+)
     return json.loads(response.text)
 
 def query_ebay_velocity(search_query: str, api_key: str):
