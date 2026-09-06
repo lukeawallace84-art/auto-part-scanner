@@ -8,7 +8,7 @@ from PIL import Image
 # Page Configuration & Mobile CSS
 # -------------------------------------------------------------
 st.set_page_config(
-    page_title="Auto Part Sourcing Scanner",
+    page_title="Auto Part Sourcing & Cross-Market Scanner",
     page_icon="🚗",
     layout="centered"
 )
@@ -22,21 +22,26 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Initialize Session State
-if "df_sold" not in st.session_state:
-    st.session_state.df_sold = None
+if "df_ebay_sold" not in st.session_state:
+    st.session_state.df_ebay_sold = None
+if "df_fb" not in st.session_state:
+    st.session_state.df_fb = None
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
 
-st.title("🚗 Auto Part Sourcing Scanner")
-st.caption("Scan part tags, calculate Sell-Through Rate (STR), and check profit margins on the spot.")
+st.title("🚗 Auto Part Sourcing & Cross-Market Scanner")
+st.caption("Scan part tags, evaluate eBay market velocity, and compare local Facebook Marketplace listings.")
 
 # -------------------------------------------------------------
-# API Key Inputs (Sidebar / Expandable or Top)
+# Sidebar API Configurations & Local Settings
 # -------------------------------------------------------------
 with st.sidebar:
     st.header("🔑 API Configurations")
     gemini_api_key = st.text_input("Gemini API Key", type="password")
     serpapi_key = st.text_input("SerpApi Key", type="password")
+    
+    st.header("📍 Local Market Settings")
+    user_location = st.text_input("Location (City, State / Zip)", value="Springfield, MO")
     default_cost = st.number_input("Default Junkyard Cost ($)", min_value=0.0, value=25.0, step=5.0)
 
 # -------------------------------------------------------------
@@ -144,10 +149,40 @@ def query_ebay_velocity(search_query: str, api_key: str):
         "recent_solds": sold_results[:10]
     }
 
+def query_facebook_marketplace(search_query: str, location: str, api_key: str):
+    """Queries Google Search via SerpApi targeting local Facebook Marketplace listings."""
+    endpoint = "https://serpapi.com/search.json"
+    fb_query = f"{search_query} site:facebook.com/marketplace"
+    
+    params = {
+        "engine": "google",
+        "q": fb_query,
+        "location": location,
+        "api_key": api_key
+    }
+    
+    try:
+        resp = requests.get(endpoint, params=params, timeout=15).json()
+    except Exception:
+        resp = {}
+        
+    organic = resp.get("organic_results", [])
+    items = []
+    for result in organic[:8]:
+        title = result.get("title", "No Title")
+        link = result.get("link", "#")
+        snippet = result.get("snippet", "")
+        items.append({
+            "Title": title,
+            "Snippet / Details": snippet,
+            "Link": link
+        })
+    return items
+
 # -------------------------------------------------------------
 # Execution Flow
 # -------------------------------------------------------------
-if image and st.button("Analyze Part & Check Market", type="primary"):
+if image and st.button("Analyze Part & Cross-Compare Markets", type="primary"):
     if not gemini_api_key or not serpapi_key:
         st.warning("Please provide both your Gemini API Key and SerpApi Key in the sidebar.")
     else:
@@ -168,27 +203,25 @@ if st.session_state.analysis_result:
         st.write(f"**Condition:** {res.get('apparent_condition', 'N/A')}")
         st.write(f"**Suggested Query:** {res.get('recommended_ebay_query', 'N/A')}")
 
-    # Query Market Velocity
     query_to_run = manual_override if manual_override else res.get('recommended_ebay_query', '')
     if query_to_run:
+        # 1. eBay Market Velocity
         with st.spinner(f"Querying eBay marketplace velocity for: '{query_to_run}'..."):
-            market_data = query_ebay_velocity(query_to_run, serpapi_key)
+            ebay_data = query_ebay_velocity(query_to_run, serpapi_key)
             
-            total_active = market_data["total_active"]
-            total_sold = market_data["total_sold"]
-            
-            # Calculate Sell-Through Rate (STR)
+            total_active = ebay_data["total_active"]
+            total_sold = ebay_data["total_sold"]
             str_percentage = (total_sold / (total_active + total_sold) * 100) if (total_active + total_sold) > 0 else 0.0
 
             st.markdown("---")
-            st.subheader("📊 Market Velocity & Metrics")
+            st.subheader("📊 eBay Market Velocity & Comps")
             
             m1, m2, m3 = st.columns(3)
             m1.metric("Active Listings", total_active)
             m2.metric("Sold Listings (90d)", total_sold)
             m3.metric("Sell-Through Rate (STR)", f"{str_percentage:.1f}%")
 
-            recent_solds = market_data["recent_solds"]
+            recent_solds = ebay_data["recent_solds"]
             if recent_solds:
                 items_data = []
                 for item in recent_solds:
@@ -198,9 +231,20 @@ if st.session_state.analysis_result:
                     link = item.get("link", "#")
                     items_data.append({"Title": title, "Sold Price ($)": extracted_price, "Link": link})
                 
-                st.session_state.df_sold = pd.DataFrame(items_data)
-                
-                st.write("### Recent Comp Sales")
-                st.dataframe(st.session_state.df_sold, use_container_width=True)
+                st.session_state.df_ebay_sold = pd.DataFrame(items_data)
+                st.dataframe(st.session_state.df_ebay_sold, use_container_width=True)
             else:
-                st.info("No recent sold items returned for this specific query. Try providing a manual override description.")
+                st.info("No recent eBay sold items returned for this specific query.")
+
+        # 2. Local Facebook Marketplace & Classifieds Comps
+        with st.spinner(f"Scanning Facebook Marketplace & local comps near {user_location}..."):
+            fb_items = query_facebook_marketplace(query_to_run, user_location, serpapi_key)
+            
+            st.markdown("---")
+            st.subheader(f"🌐 Local Marketplace Comps ({user_location})")
+            
+            if fb_items:
+                st.session_state.df_fb = pd.DataFrame(fb_items)
+                st.dataframe(st.session_state.df_fb, use_container_width=True)
+            else:
+                st.info("No direct Facebook Marketplace listings found locally for this exact query.")
